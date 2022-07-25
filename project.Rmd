@@ -1,0 +1,736 @@
+---
+title: "Untitled"
+author: "Anonymous"
+date: "12/6/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+---
+title: "BDA - Project"
+author: "Anonymous"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 1
+  word_document:
+    toc: yes
+    toc_depth: '1'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+# This chunk sets echo = TRUE as default, that is print all code.
+# knitr::opts_chunk$set can be used to set other notebook generation options, too.
+# include=FALSE inside curly brackets makes this block not be included in the pdf.
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+## The motivation
+
+Neonatal mortality is related to the number of deaths in the first 28 days of a child's life. This is a high-risk period and according to UNICEF data, the average number of deaths is estimated to be 17 per 1000 live births in 2019 [1]. Neonatal mortality is classified into an early neonatal mortality which is between the first 7 days of birth and a late neonatal mortality which occurs after 7 days of birth. On the other hand, perinatal mortality refers to the death of the child during the fetal period in conjunction to early neonatal mortality. It is clear that there are huge differences in perinatal and neonatal mortality rates between continents and between developed and emerging countries. This project will attempt to model the probability of perinatal and late neonatal mortality in 2020 in different regions in Colombia (a developing country in Latin America) and compare it with the US, which is among the richest countries in the world. 
+
+
+## The main modeling idea 
+
+The general idea for modeling the probability of perinatal and late neonatal mortality is to treat the cases of death from this condition as "successes" among the total number of births in the same time period. With this in mind, we came up with a beta-binomial model that is natural in these cases. 
+
+
+
+##  Some illustrative figure
+
+```{r, warning=FALSE, message=FALSE}
+# Read Excel file and convert it to DataFrame
+library("readxl")
+library("rstan")
+exceldata = read_excel("Colombia2020.xlsx")                                                                            
+dfData= data.frame(exceldata)
+deaths = dfData$Deaths
+births = dfData$Lbirths+ dfData$Deaths
+dfData$rate = (deaths/births)
+
+dfData$id <- seq.int(nrow(dfData))
+plot(dfData$id ~ dfData$rate, title="Perinatal and  neonatal mortality for Colombia",
+     ylab="Colombia countries by Ids",
+     xlab="Colombia countries death rate")
+exceldata = read_excel("a.xlsx")                                                                            
+dfA= data.frame(exceldata)
+exceldata = read_excel("b.xlsx")                                                                            
+dfB= data.frame(exceldata)
+lm1 <- lm(id ~ rate, data = dfData)
+abline(lm1, col = 2, lty = 4, lw = 3)
+
+```
+
+
+And here about the US data:
+
+
+```{r, warning=FALSE, message=FALSE}
+
+exceldata = read_excel("US2020.xlsx")                                                                           
+dfData= data.frame(exceldata)
+deaths = dfData$Deaths
+births = dfData$Births
+dfData$rate = (deaths/births)
+dfData$id <- seq.int(nrow(dfData))
+plot(dfData$id ~ dfData$rate, title="The perinatal and neonatal mortality for US", 
+     xlab="US countries death rate", ylab="US countries number")
+exceldata = read_excel("aUS.xlsx")                                                                            
+dfA= data.frame(exceldata)
+exceldata = read_excel("bUS.xlsx")                                                                            
+dfB= data.frame(exceldata)
+lm1 <- lm(id ~ rate, data = dfData)
+abline(lm1, col = 2, lty = 4, lw = 3)
+```
+
+
+# Data
+
+For Colombia, data were found on the website of the National Institute of Health of the country, data were collected manually in an excel file from epidemiological reports from the year 2017 to 2020. The data collected were the number of births and the number of deaths in the perinatal and late neonatal period by year and in 38 regions. Data for the United States was collected from the CDC wonder website in the Infant Death Records. In the case of Colombia, there are no published models for this type of infant mortality and only predictive models for the whole country were found in terms of US data. 
+
+
+
+
+# Model description
+
+The following section describe the two models used in this problem, hierarchical and separate. 
+
+## Separate model
+
+The parameter of interest is $\theta$ which corresponds to the probability late neonatal and perinatal death among regions. The likelihood is computed as:
+
+$$
+p(y_i|\theta_i)= \binom{n_i}{y_i}\theta_i^{y_i}\left ( 1-\theta_i \right )^{y_i}
+$$
+
+Being $y_i$ the number of deaths, $n_i$ the number of births for each region.
+
+### Prior
+
+Informative priors were chosen in both models since we also have data from previous years. The mean of $a$ and $b$ values for the previous years were used in the hierarchical model and separate models. 
+
+The prior in this case was obtained using beta distribution since parameter $a$ resemble number of successes and $a+b$ the total number of trials.
+
+So, the prior in this case was computed as:
+
+$$
+\theta_i \sim Beta(\bar{a}_{i}, \bar{b}_{i})
+$$
+
+Being $\bar{a}_{i}, \bar{b}_{i}$ the mean of of deaths and live births between each region and computed from previous years.
+
+
+## Hierarchical model
+
+The likelihood remains the same as in the previous model. But in this case we use a transformation to compute hyper-prior.
+
+Parameter $\mu$ is equal to the probability of death, that is $a/(a+b)$ and $\eta$ corresponds to the total population ($a+b$).
+
+### Hyper-priors
+
+$$
+\eta \sim exponential(x),
+\\
+ \mu_i \sim Beta(a_i,b_i)
+$$
+
+### Prior
+
+$$
+\theta_i \sim Beta(\alpha, \beta)
+$$
+given that $\alpha = \mu\eta$ and $\beta = (1-\mu)\eta$.
+
+
+# Stan code
+
+## Separate model
+
+```{r, eval=FALSE}
+write("// Stan Separate model
+//Beta-binomial Separate model 
+
+data {
+  int<lower=0> N; // Number of states
+  int<lower=0> y[N]; //Number of neonatal deaths
+  int<lower=0> n[N]; //Number of births
+  real aMean[N]; //Minimun a value
+  real bMean[N]; //Minimun b Value
+
+  
+}
+
+// The parameters accepted by the model
+parameters {
+  vector<lower=0, upper=1>[N] theta;
+  
+}
+
+// The model to be estimated. We model the output
+// 'y' to be normally distributed with mean 'mu'
+// and standard deviation 'sigma'.
+model {
+  
+  //Priors
+    
+    for (j in 1:N) {
+      theta[j] ~ beta(aMean[j], bMean[j]);
+    }
+      
+    //Likelihood 
+    for (k in 1:N){
+      y[k] ~ binomial(n[k], theta[k]);
+    }
+
+}
+
+generated quantities {
+
+    //Log Likelihood ratios
+    vector[N] log_lik;
+    real ypred[N];
+  
+      for(j in 1:N){
+        log_lik[j] = binomial_lpmf(y[j] | n[j], theta[j]);
+      }
+      
+        
+    for(j in 1:N){
+        ypred[j]= binomial_rng(n[j],theta[j]);
+        }
+  }
+// The posterior predictive distribution",
+"separate_model.stan")
+```
+
+## Hierarchical model
+
+
+```{r}
+write("// Stan Beta-binomial Hierarchical model 
+data {
+  
+  int<lower=0> N; // Number of states
+  int<lower=0> y[N]; //Number of neonatal deaths
+  int<lower=0> n[N];
+  real a[N]; //Mean a value
+  real b[N]; //Mean b Value
+  real<lower=0> e;
+  
+}
+
+// The parameters accepted by the model
+parameters {
+  real<lower=0,upper=1> mu;
+  real<lower=0> eta;
+  real<lower=0,upper=1> theta[N];
+}
+
+transformed parameters {
+  real<lower=0> alpha;
+  real<lower=0> beta;
+  alpha = eta* mu ;
+  beta = eta*(1-mu);
+}
+
+
+model {
+    //Hyper-priors
+    eta ~ exponential(e);
+    
+    
+    
+    
+    //Prior
+    for (k in 1:N){
+      
+     mu ~ beta(a[k],b[k]);
+     theta[k] ~ beta(alpha,beta);
+    
+    //Likelihood
+      y[k] ~ binomial(n[k], theta[k]);
+    }
+    
+  }
+generated quantities {
+  
+  vector[N] log_lik;
+  real ypred[N];
+  
+  for(i in 1:N){
+        log_lik[i] = binomial_lpmf(y[i]|n[i], theta[i]);
+      }
+      
+  
+    for(j in 1:N){
+        ypred[j]= binomial_rng(n[j],theta[j]);
+        }
+}// The posterior predictive distribution",
+"hierachichal_model.stan")
+```
+
+# Running the model
+
+## US data
+
+### Separate model
+
+First we need to read the data and transform it into a data frame.
+
+```{r, message=FALSE, warning=FALSE}
+
+library("readxl")
+library("rstan")
+exceldata = read_excel("US2020.xlsx")                                                                            
+dfData= data.frame(exceldata)
+```
+
+Then we read the files that have the mean and of the number of live births and the number of deaths in previous years. In the case of US average was obtained from 2007-2018
+
+```{r, message=FALSE, warning=FALSE}
+exceldata = read_excel("aUS.xlsx")                                                                            
+dfA= data.frame(exceldata)
+exceldata = read_excel("bUS.xlsx")                                                                            
+dfB= data.frame(exceldata)
+```
+
+Then we compute the model with the data
+
+```{r, message=FALSE, warning=FALSE}
+
+library(loo)
+
+deaths = dfData$Deaths
+births = dfData$Births
+
+stan_data <- list(
+  N = 51,
+  y = deaths,
+  n = births,
+  aMean = dfA$Mean,
+  bMean = dfB$Mean
+)
+
+sm <- rstan::stan_model(file = "separate_model.stan")
+separate_modelUS <- rstan::sampling(sm, data = stan_data, refresh= 0)
+
+```
+### Hierarchical model
+
+```{r, message=FALSE, warning=FALSE}
+
+
+sm <- rstan::stan_model(file = "hierarchical_model.stan")
+stan_data_hierachichal <- list(
+  N=51,
+  y = deaths,
+  n = births,
+  a = dfA$Mean,
+  b = dfB$Mean,
+  e=1/60000
+)
+hierarchical_modelUS <- rstan::sampling(sm, data = stan_data_hierachichal,refresh=0)
+```
+
+## Colombia data
+
+First we need to read the data and transform it into a data frame.
+
+```{r, message=FALSE, warning=FALSE}
+
+exceldata = read_excel("Colombia2020.xlsx")                                                                           
+dfData= data.frame(exceldata)
+```
+
+Then we read the files that have the mean and of the number of live births and the number of deaths in previous years. In the case of Colombia these values were obtained using the mean from 2017 to 2019.
+
+```{r, message=FALSE, warning=FALSE}
+exceldata = read_excel("a.xlsx")                                                                            
+dfA= data.frame(exceldata)
+exceldata = read_excel("b.xlsx")                                                                            
+dfB= data.frame(exceldata)
+```
+### Separate model 
+
+```{r, message=FALSE, warning=FALSE}
+
+library(bayesplot)
+library(loo)
+
+deaths = dfData$Deaths
+births = dfData$Lbirths+ dfData$Deaths
+
+stan_data <- list(
+  N = 37,
+  y = deaths,
+  n = births,
+  aMean = dfA$Mean,
+  bMean = dfB$Mean
+)
+
+sm <- rstan::stan_model(file = "separate_model.stan")
+separate_modelCol <- rstan::sampling(sm, data = stan_data, refresh= 0)
+
+```
+### Hierarchical model 
+
+```{r, message=FALSE, warning=FALSE}
+
+
+sm <- rstan::stan_model(file = "hierarchical_model.stan")
+
+stan_data_hierachichal <- list(
+  N=37,
+  y = deaths,
+  n = births,
+  a = dfA$Mean,
+  b = dfB$Mean,
+  e=1/20000
+)
+hierarchical_modelCol <- rstan::sampling(sm, data = stan_data_hierachichal,refresh=0)
+```
+
+# Convergence diagnostics (Rˆ, ESS, divergences) and what was done if the convergence was not good with the first try.
+For convergence diagnostics Rhat and Bulk_ESS values were used. This statistic compares between chain and within chain drawns for each of the model parameters. If chains have not converged well, Rhat will be larger than 1.
+
+
+## US Data
+
+### Separate model 
+
+
+Below there are the histograms of Rhat for each one of the models:
+
+
+```{r, warning=FALSE}
+s <- summary(separate_modelUS)$summary
+Rhat <- s[,10]
+hist(Rhat, 
+    main="Histogram for Rhat", 
+     xlab="Rhat", 
+     breaks=20)
+
+check_divergences(separate_modelUS)
+check_treedepth(separate_modelUS)
+```
+
+
+### Hierarchical model
+
+```{r, warning=FALSE}
+s <- summary(hierarchical_modelUS)$summary
+Rhat <- s[,10]
+hist(Rhat, 
+    main="Histogram for Rhat", 
+     xlab="Rhat", 
+     breaks=20)
+
+check_divergences(hierarchical_modelUS)
+check_treedepth(hierarchical_modelUS)
+
+```
+
+## Colombia data
+
+
+### Separate model
+
+```{r, warning=FALSE}
+s <- summary(separate_modelCol)$summary
+Rhat <- s[,10]
+hist(Rhat, 
+    main="Histogram for Rhat", 
+     xlab="Rhat", 
+     breaks=20)
+
+check_divergences(separate_modelCol)
+check_treedepth(separate_modelCol)
+```
+
+
+### Hierarchical model
+
+```{r, warning=FALSE}
+s <- summary(hierarchical_modelCol)$summary
+Rhat <- s[,10]
+hist(Rhat, 
+    main="Histogram for Rhat", 
+     xlab="Rhat", 
+     breaks=20)
+
+check_divergences(hierarchical_modelCol)
+check_treedepth(hierarchical_modelCol)
+```
+
+
+In all of these histograms we see that Rhat values are really close to 1 and none of Rhat values are below 1.05 which is recommended in Stan official website.
+
+Additionally if you check the **Appendix** section and **Convergence monitoring** all values of Bulk Effective sample size are above 100 so the models are considered good.
+
+Finally, there were not any warnings regarding iterations ending in divergence or saturating the maximum tree depth of 10 for any of the models.
+
+
+## Model improvements 
+
+### Separate model
+
+For the separate model, the prior was first tried to be computed using another hyper-prior information assuming that parameters a (number of deaths) and b (number of living births) will follow a normal distribution based on past data. The following lines contain the previous model priors:
+
+```{r, eval=FALSE}
+model {
+  
+  
+  //Hyper priors
+  for (i in 1:N) {
+      a[i] ~ normal(aMean[i], aStd[i]) T[L,]; //Number of successes parameter
+      b[i] ~ normal(bMean[i], bStd[i]) T[L,]; //Number of no Success
+    }
+  
+  //Priors
+    
+    for (j in 1:N) {
+      theta[j] ~ beta(a[j], b[j]);
+    }
+      
+    //Likelihood 
+    for (k in 1:N){
+      y[k] ~ binomial(n[k], theta[k]);
+    }
+
+}
+```
+
+However, doing the k-pareto analysis, there were many values between 0.7 and 1 and even higher than 1, so this choice was discarded.
+
+
+### Hierarchical model
+
+Many values were chosen for hyper-priors of parameters $\mu$ and $\eta$. We start using gamma function for parameter $\eta$ and one single distribution for $\mu$. Like this:
+
+
+```{r, eval=FALSE}
+model {
+  
+  
+model {
+  //Hyper-priors
+  eta ~ gamma(s,t);
+
+  
+  mu ~ beta(a,b);
+    
+    //Prior
+    for (k in 1:N){
+      theta[k] ~ beta(alpha,beta);
+    
+    //Likelihood
+      y[k] ~ binomial(n[k], theta[k]);
+    
+  }
+
+}
+```
+
+However this common parameter $\eta$ distribution was changed to exponential since it is a weakly hyper-prior and $\mu$ different distributions were obtained depending on the region. This changes improved k-pareto diagnostics a little bit.
+
+# Model comparison
+
+## US Data
+
+### Separate model
+```{r, message=FALSE, warning=FALSE}
+
+separate_extract_log_lik <- extract_log_lik(separate_modelUS, 
+                                            parameter_name = "log_lik", 
+                                            merge_chains = FALSE);
+r_eff <- relative_eff(exp(separate_extract_log_lik), cores = 2) 
+separate_model_loo <- loo(separate_extract_log_lik, r_eff = r_eff, cores = 2)
+print(separate_model_loo)
+```
+
+
+### Hierarchical model
+
+```{r, message=FALSE, warning=FALSE}
+
+hierarchical_extract_log_lik <- extract_log_lik(hierarchical_modelUS, 
+                                                parameter_name = "log_lik", 
+                                                merge_chains = FALSE);
+r_eff <- relative_eff(exp(hierarchical_extract_log_lik), cores = 2) 
+hierarchical_model_loo <- loo(hierarchical_extract_log_lik, r_eff = r_eff, cores = 2)
+print(hierarchical_model_loo)
+```
+
+
+## Colombia Data
+
+### Separate model
+```{r, message=FALSE, warning=FALSE}
+
+separate_extract_log_lik <- extract_log_lik(separate_modelCol, 
+                                            parameter_name = "log_lik", 
+                                            merge_chains = FALSE);
+r_eff <- relative_eff(exp(separate_extract_log_lik), cores = 2) 
+separate_model_loo <- loo(separate_extract_log_lik, r_eff = r_eff, cores = 2)
+print(separate_model_loo)
+```
+
+
+### Hierarchical model
+
+```{r, message=FALSE, warning=FALSE}
+
+hierarchical_extract_log_lik <- extract_log_lik(hierarchical_modelCol, 
+                                                parameter_name = "log_lik", 
+                                                merge_chains = FALSE);
+r_eff <- relative_eff(exp(hierarchical_extract_log_lik), cores = 2) 
+hierarchical_model_loo <- loo(hierarchical_extract_log_lik, r_eff = r_eff, cores = 2)
+print(hierarchical_model_loo)
+```
+
+
+Looking at k-pareto analysis since the majority of k values are below 0.7 in the separate model, this model was chosen as the best for both data sets. In colombian data the elpd_loo is greater in the separate model, that is another reason why this model was chosen. 
+
+# Posterior checking and results
+
+As the best model was the separate, we will use the posterior draws of this model to compare the theta parameter for the two countries.
+
+The US:
+
+```{r, warning=FALSE, fig.height = 10}
+plot(separate_modelUS, pars=c('theta'))
+```
+
+Colombia:
+
+```{r, message=FALSE, warning=FALSE}
+
+plot(separate_modelCol, pars=c('theta'))
+
+```
+As you can see from the figures, which represent the confidence interval and the mean value of the probability of death in the perinatal and late neonatal period, the probability parameter is drastically larger among all Colombian states compared to the ones in the US. 
+
+
+Regarding within-country comparison and using these posterior draws summary graph we can rank the top 5 regions of both countries with worst perinatal and late neonatal mortality rate.
+
+In Colombia the top 5 worst states are: 5. Cordoba ($\bar{\theta}$) of 0.0202, 4. Buenaventura ($\bar{\theta}$) of 0.0284 3. Vaupes ($\bar{\theta}$) of 0.0284, 2. Vichada ($\bar{\theta}$) of 0.0306 and 1. Choco with a ($\bar{\theta}$) of 0.0330.
+
+
+In the US, the top 5 worst states are 5. South Carolina ($\bar{\theta}$) of 0.00472, 4. Alabama ($\bar{\theta}$) of 0.00484 3. Ohio ($\bar{\theta}$) of 0.00488, 2. Columbia ($\bar{\theta}$) of 0.00534 and 1. Mississippi with a ($\bar{\theta}$) of 0.00545.
+
+
+It is interesting that Choco, Vichada and Vaupes are among the top 5 poorest states in Colombia [2] while South Carolina, Columbia, Mississipi and Alabama are between the top 10 poorest states in the US [3]. 
+
+With this in mind, there is reason to suspect that the state wealth variable is related to the rate of perinatal and late neonatal mortality.
+
+
+# Posterior predictive checking
+
+The posterior predictive checking was done using the best model which was the separate one in Colombian data.
+
+```{r}
+y_pred <- as.matrix(separate_modelCol, pars = "ypred")
+dim(y_pred)
+ppc_dens_overlay(deaths, y_pred[1:37, ])
+```
+
+As you can see from the figure, the predictions are quite similar to the real value of y (number of deaths in neonatal and perinatal period). The predictive performance is quite good. 
+
+# Sensitivity analysis with respect to prior choices (i.e. checking whether the result changes a lot if prior is changed)
+
+## Separate model
+
+As mentioned in model improvements, some other priors were chosen before, specifically hyper-priors  
+
+```{r, eval=FALSE}
+
+  //Hyper priors
+  for (i in 1:N) {
+      a[i] ~ normal(aMean[i], aStd[i]) T[L,]; //Number of successes parameter
+      b[i] ~ normal(bMean[i], bStd[i]) T[L,]; //Number of no Success
+    }
+```
+
+The results of the posterior draws were almost the same but when performing k-pareto diagnostics, results were worse (more k values above 0.7).
+
+
+## Hierarchical
+
+As mentioned in model improvements, some other priors were chosen before, specifically hyper-priors  
+
+```{r, eval=FALSE}
+
+  //Hyper-priors
+  eta ~ gamma(s,t);
+```
+
+Many values were manually selected from $s.t$ to resemble te distribution of the total number of births, but the k-pareto diagnostics gave worse results (more k values above 0.7).
+
+# Discussion of issues and potential improvements.
+
+The hierarchical model did not perform well in k-pareto diagnostics, many k values were above 0.7. Maybe to improve our model we can work with the data points of the previous years, first to improve k-values and second to make a predictive model by state so that the probability of perinatal and neonatal mortality by state can be forecasted in future years. Probably using models that fit data series such as ARIMA or ARIMAx.
+
+
+# Conclusion what was learned from the data analysis.
+
+
+From our point of view, we learned and reinforced how to model using hierarchical and non-hierarchical models in case of binomial trials. Also we learn how to work on the model (choosing priors is not easy!) and also how to do all kinds of calculations to get information about convergence and how well the model fits the data. We also learned about model comparison and basically we have the tools to do Bayesian modeling in any area.
+
+
+# Self-reflection of what the group learned while making the project.
+
+We as a group learned how we can work together first in finding the data then doing some research to find the appropriate model for the problem we want to solve. We learned how we can improve models by sharing our knowledge and experience and finally doing our best together to improve the proposed  model and solution to the related problem
+
+
+# References 
+
+[1] “Neonatal Mortality.” UNICEF DATA, 20 July 2021, https://data.unicef.org/topic/child-survival/neonatal-mortality/. [2] Semana Magazine. “Pobreza En Colombia: Estos Son Los Departamentos Más Afectados.” Semana.com Últimas Noticias De Colombia y El Mundo, 21 Dec. 2020, https://www.semana.com/economia/articulo/pobreza-en-colombia-estos-son-los-departamentos-mas-afectados/202026/. 
+[3] November 10, 2021. “Top 10 Poorest States in the U.S.” Friends Committee On National Legislation, https://www.fcnl.org/updates/2021-11/top-10-poorest-states-us.
+Vehtari, Aki, and Markus Paasiniemi. “BDA3 Demos Comparison of 2 Groups with Binomial.” Aalto University. 
+Niemi, Jarad. “Hierarchical Models.” PPT file. Iowa State University, 2019. 
+Hu, Jim Albert and Jingchen. “Probability and Bayesian Modeling.” Chapter 10 Bayesian Hierarchical Modeling, 30 July 2020, https://bayesball.github.io/BOOK/bayesian-hierarchical-modeling.html. 
+Brody-Moore, Peter, "Bayesian Hierarchical Meta-Analysis of Asymptomatic Ebola Seroprevalence" (2019). CMC Senior Theses. 2228.https://scholarship.claremont.edu/cmc_theses/2228
+
+
+# Appendix
+
+## Convergence monitoring
+
+US Data
+
+### Separate model
+
+```{r, message=FALSE, warning=FALSE}
+
+sUS<- monitor(separate_modelUS)$Bulk_ESS
+
+```
+
+### Hierarchical model 
+```{r, message=FALSE, warning=FALSE}
+
+sUS<- monitor(hierarchical_modelUS)$Bulk_ESS
+
+```
+
+
+Colombia Data
+
+### Separate model
+
+```{r, message=FALSE, warning=FALSE}
+
+sUS<- monitor(separate_modelCol)$Bulk_ESS
+
+```
+
+### Hierarchical model 
+```{r, message=FALSE, warning=FALSE}
+
+sUS<- monitor(hierarchical_modelCol)$Bulk_ESS
+
+```
